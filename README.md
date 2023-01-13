@@ -12,23 +12,19 @@
 - Overview
     1. use webhook to find when the latest data is published to URL
     2. Lambda compute puts chunks into stream
-    3. Stream passes minibatches to cluster for cleaning
-        1. filtering
-        2. check that chunk is complete
-        3. convert to `zarr` 
-    4. Cleaned raw data is placed in ****************************raw data lake****************************
+    3. Stream passes batches to raw staging area for cleaning
+    4.  Cluster cleans raw data and pushes to raw ****************************data lake****************************
 - **API gateway** wakes Lambda to initiate chunk processing
     - Get base url, need to make sure we don’t call each link many times because of the time out limitation and no simultaneous IP calls
 - **Lambda** pushes individual `GRIB` files into stream
     - Lambda code coordinates the API calls according to the API call constraints like number of concurrent calls, timeout between each call
-    - Lambda can have memory up to 10GB, so able to process more than one chunk
-    - Using a **single Lambda** can be a potential bottleneck, but works well for putting the binary chunks into a stream fast. For higher throughput, we could add more lambda functions
+    - Lambda can have memory up to 10GB, so able to process more than one chunk in parallel
+    - Using a **single Lambda** can be a potential bottleneck, but works well for putting the binary chunks into a stream fast. For higher throughput, we could add more lambda functions. These will have separate IP addresses.
 - **Kinesis** dumps chunks into raw staging area
-    - Kinesis
-    - Mini-batch size depends on capacity requirements of stream
+    - Stream allows for increased throughput and rapid checks before putting in staging area
     - we don’t need it up and running for the remaining 5 hour intervals, so Kinesis should be in **on-demand mode** rather than provision mode
     - check for data corruption/transferred incorrectly with check sums.
-        - If the checksum fails, can reload minibatched files to be polled from Lambda with retry policy if needed
+        - If the checksum fails, can reload chunks polled from Lambda with retry policy if needed
 - Send run logs to **********Cloudwatch********** and error/retry notifications
     - run logs
     - config and metadata
@@ -47,16 +43,17 @@
     - transform grib files to zarr and filter for correct variables from run config
     - save `.zarr` file and store with data lake hierarchy to file storage.
 - Optimizations
-    - perform transform operations on chunks into minibatches. parallelize the cleaning of the data, since launching a container to clean each chunk would take more time
-    - make containers part of Fargate cluster with auto-scale to handle more transformations at once
+    - perform transform operations on chunks into minibatches by container. parallelize the cleaning of the data, since launching a container to clean each chunk would take more time
+    - make containers part of Fargate cluster with auto-scale to handle the data format transformations
 - Send notification once process is complete
 - Once transfer from stage to raw data lake is complete, delete original files or send to cold storage (AWS Glacier flexible retrieval)
-    - ** AWS Glacier coldest storage would be a ~500$ a month for permanent storage of full raw grb2 data. Not requested but here’s the quote!
+    - ** AWS Glacier coldest storage would be a ~600$ a month for permanent storage of full raw grb2 data. Not requested but here’s the quote!
 
 ## Data lake storage
 
 - **********zarr********** is the format of choice for the data lake. The data is partitioned with zarr with hierarchies, and chunk sizes. Example hierarchy for raw data lake will be `model/version/init_timest/lead_time/file.zarr`
 - Once all files are ready, trigger the processing compute (this can be EMR)
+- Use customized storage classes for latest week of data for faster access, and use colder lass for older/archival data. S3 Infrequent access or Amazon S3 Glacier Instant Retrieval. (this addresses reqs 1a, 1b)
 
 ### zarr vs parquet
 
@@ -64,7 +61,7 @@ Zarr provides the following benefits
 
 - optimized for chunk-based distributed retrieval. This makes it good for retrieving chunks of data along similar longitude ranges
 - it provides flexibility when dealing with models of different levels (not just coordinates, also depth, height) using hierarchical groups
-- it gives the option to chunk across one dimension and not the other → can optimize
+- customize chunk size and dimensionality. For example, I can choose to chunk across one dimension and not the other
 
 Even though **parquet** provides similar compression beneifts as zarr, it provides the following downsides given our requirements:
 
